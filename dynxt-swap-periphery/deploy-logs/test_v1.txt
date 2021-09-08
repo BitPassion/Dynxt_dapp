@@ -1,0 +1,71 @@
+
+
+Starting migrations...
+======================
+> Network name:    'bscTestnet'
+> Network id:      97
+> Block gas limit: 29882814 (0x1c7f9be)
+
+
+1_initial_migration.js
+======================
+
+   Deploying 'Migrations'
+   ----------------------
+   > transaction hash:    0xf518d9658908d02c9a12ad0307fef72a506e1d656237d2c1dfdac36fbc4bc76c
+   > Blocks: 3            Seconds: 9
+   > contract address:    0xd387316cdEF68ae4C624c0457F6552f347B7EfAa
+   > block number:        10846510
+   > block timestamp:     1627055977
+   > account:             0x5f531aD0907dEc55811FF2096477DBC4f21fc34c
+   > balance:             1.458629722037600608
+   > gas used:            129186 (0x1f8a2)
+   > gas price:           20 gwei
+   > value sent:          0 ETH
+   > total cost:          0.00258372 ETH
+
+
+   > Saving migration to chain.
+   > Saving artifacts
+   -------------------------------------
+   > Total cost:          0.00258372 ETH
+
+
+2_deploy_contracts.js
+=====================
+owner:  0x5f531aD0907dEc55811FF2096477DBC4f21fc34c
+network:  bscTestnet
+
+   Deploying 'DYNXTRouter'
+   -----------------------
+   > transaction hash:    0xd39b2497691a1dbd6c81bac74dbcab54cadb18bde00bd738159966f2ab8e3f79
+   > Blocks: 3            Seconds: 9
+   > contract address:    0x3E3DE45447Cc22664a58d2F33Cd664650448E85a
+   > block number:        10846518
+   > block timestamp:     1627056001
+   > account:             0x5f531aD0907dEc55811FF2096477DBC4f21fc34c
+   > balance:             1.379599722037600608
+   > gas used:            3909234 (0x3ba672)
+   > gas price:           20 gwei
+   > value sent:          0 ETH
+   > total cost:          0.07818468 ETH
+
+router:  0x3E3DE45447Cc22664a58d2F33Cd664650448E85a
+
+   > Saving migration to chain.
+   > Saving artifacts
+   -------------------------------------
+   > Total cost:          0.07818468 ETH
+
+
+Summary
+=======
+> Total deployments:   2
+> Final cost:          0.0807684 ETH
+
+truffle run verify DYNXTRouter --network bscTestnet
+
+Verifying DYNXTRouter
+Pass - Verified: https://testnet.bscscan.com/address/0x3E3DE45447Cc22664a58d2F33Cd664650448E85a#contracts
+Successfully verified 1 contract(s).
+

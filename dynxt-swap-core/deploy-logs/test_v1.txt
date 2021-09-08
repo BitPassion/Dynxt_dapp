@@ -1,0 +1,77 @@
+
+Compiling your contracts...
+===========================
+> Everything is up to date, there is nothing to compile.
+
+
+
+Starting migrations...
+======================
+> Network name:    'bscTestnet'
+> Network id:      97
+> Block gas limit: 29882814 (0x1c7f9be)
+
+
+1_initial_migration.js
+======================
+
+   Replacing 'Migrations'
+   ----------------------
+   > transaction hash:    0xba87650cd8c718fd71875c3a90c23fb75d11f37c745f0dad440d92d290bbedee
+   > Blocks: 6            Seconds: 21
+   > contract address:    0x961282199aE0D4543703876b8BB840c4ff98D57D
+   > block number:        10846317
+   > block timestamp:     1627055398
+   > account:             0x5f531aD0907dEc55811FF2096477DBC4f21fc34c
+   > balance:             1.511987562037600608
+   > gas used:            128970 (0x1f7ca)
+   > gas price:           20 gwei
+   > value sent:          0 ETH
+   > total cost:          0.0025794 ETH
+
+
+   > Saving migration to chain.
+   > Saving artifacts
+   -------------------------------------
+   > Total cost:           0.0025794 ETH
+
+
+2_deploy_contracts.js
+=====================
+user:  0x5f531aD0907dEc55811FF2096477DBC4f21fc34c
+network:  bscTestnet
+
+   Deploying 'DYNXTFactory'
+   ------------------------
+   > transaction hash:    0xbe3e9b440c635806fed6c2d14156fe8bbd64435b642151eb15de9040a9f8391a
+   > Blocks: 8            Seconds: 26
+   > contract address:    0x8F9ce3b55e564586a9AaE9a37850bbf70f560F2c
+   > block number:        10846344
+   > block timestamp:     1627055479
+   > account:             0x5f531aD0907dEc55811FF2096477DBC4f21fc34c
+   > balance:             1.462627422037600608
+   > gas used:            2425741 (0x25038d)
+   > gas price:           20 gwei
+   > value sent:          0 ETH
+   > total cost:          0.04851482 ETH
+
+INIT HASH FROM FACTORY:  0x89a2844d647171bbbf44784022a70e1511f226cff873c8ef4fc0e221cdf3cf4b
+
+   > Saving migration to chain.
+   > Saving artifacts
+   -------------------------------------
+   > Total cost:          0.04851482 ETH
+
+
+Summary
+=======
+> Total deployments:   2
+> Final cost:          0.05109422 ETH
+
+
+truffle run verify DYNXTFactory --network bscTestnet --license MIT
+
+Verifying DYNXTFactory
+Pass - Verified: https://testnet.bscscan.com/address/0x8F9ce3b55e564586a9AaE9a37850bbf70f560F2c#contracts
+Successfully verified 1 contract(s).
+
