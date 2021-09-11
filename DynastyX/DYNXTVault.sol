@@ -1,680 +1,501 @@
-// SPDX-License-Identifier: UNLICENSED
+//SPDX-License-Identifier: UNLICENSED
 
-/*
+pragma solidity 0.6.12;
+pragma experimental ABIEncoderV2;
 
-    syyhhdddhhhh+             `oyyyyyyyyyyy/
-     +yyhddddddddy.          -yhhhhhhhhhhy- 
-      :ysyhdddddddh:       `+hhhhhhhhhhho`  
-       .yosyhhhddddh.     .shhhhhhhhhhh/    
-        `ososyhhhhy-     /hhhhhhhhhhhs.     
-          /s+osyyo`    `ohhhhhhhhhhh+`      
-           -s+os:     -yhhhhhhhhhhy:        
-            .o+.    `/yyyyyhhhhhho.         
-                   .+sssyyyyyhhy/`          
-                  -+ooosssyyyys-            
-                `:++++oossyyy+`             
-               .///+++ooosss:               
-             `-/////+++ooso.    `.          
-            `:///////++oo/     .sh/         
-           .::///////++o-     :yhhdo`       
-         `::::://////+/`    `+yhhdddy-      
-        .:::::://///+-     .oyhhhddddd+     
-       -::::::::///+.      /syhhhddddmmy.   
-     `:::::::::://:         -oyhhddddmmmd:  
-    -////////////.           `+yhdddddmmmmo 
+import "./Utilities/contracts/token/BEP20/IBEP20.sol";
+import "./Utilities/contracts/utils/EnumerableSet.sol";
+import "./Utilities/contracts/token/BEP20/SafeBEP20.sol";
+import "./Utilities//contracts/math/SafeMath.sol";
+import "./Utilities//contracts/access/Ownable.sol";
+import "./Utilities//contracts/utils/ReentrancyGuard.sol";
 
-*/
+contract DYNXTVault is Ownable, ReentrancyGuard {
+    using SafeMath for uint256;
 
-pragma solidity ^0.8.6;
+    using SafeBEP20 for IBEP20;
 
-// Third-party contract imports.
-import "./Ownable.sol";
-import "./ReentrancyGuard.sol";
+    uint256 internal constant RATE_NOMINATOR = 10000; // rate nominator
 
-// Third-party library imports.
-import "./Address.sol";
-import "./EnumerableSet.sol";
-import "./SafeBEP20.sol";
-import "./SafeMath.sol";
-
-
-// A Vault contract that allows users to place their tokens into one or more
-// term deposits. Deposited tokens will be locked for a fixed period of time,
-// but upon reaching maturity, are able to be released with an added reward
-// proportional to the duration of the term.
-contract DYNXTVault is Ownable, ReentrancyGuard
-{
-    // Local aliasing of imported assets.
-    using Address       for address;
-    using EnumerableSet for EnumerableSet.AddressSet;
-    using SafeBEP20     for IBEP20;
-    using SafeMath      for uint256;
-    
-    // A safe deposit box to track the user's deposited principal, when the
-    // deposit reaches maturity, the reward upon reaching maturity, and
-    // whether the user is allowed to withdraw their deposit prematurely.
-    struct SafeDepositBox
-    {
-        uint256 end_time;
-        uint256 principal;
-        uint256 reward;
-        bool    premature_withdrawal_enabled;
-    }
-    
-    // A term for which a deposit is made and a mapping of all existing
-    // deposits with that term length. Each term deposit has a duration, a
-    // minimum required deposit, a numerator and denominator which set the
-    // yield rate, and a list of safe deposit boxes being held under this
-    // term.
-    struct TermDeposit
-    {
+    struct LockInfo {
+        uint256 lockId;
+        uint256 minimumDeposit;
+        uint256 percentage;
         uint256 duration;
-        uint256 minimum_deposit;
-        uint256 yield_numerator;
-        uint256 yield_denominator;
-        uint256 number_of_accounts;
-        EnumerableSet.AddressSet accounts;
-        mapping(address => SafeDepositBox) deposits;
+        bool isEnabled;
     }
-    
-    // Determines the token to be accepted and handled by the vault and any
-    // additional values necessary for properly handling supplies of it.
-    IBEP20 immutable vault_token;
-    address public vault_token_address;
-    uint256 public vault_token_decimals;
-    uint256 private vault_token_scale_factor;
-    
-    // Maps a unique duration in seconds to the safe deposit boxes associated
-    // with those terms.
-    uint256 public number_of_terms = 0;
-    mapping(uint256 => TermDeposit) private deposit_terms;
-    
-    // Tracks the total number of tokens currently held on behalf of users.
-    uint256 public current_vault_holdings = 0;
-    uint256 public pending_vault_rewards  = 0;
-    
-    // A Unix timestamp which, if greater than the current block timestamp,
-    // prevents the contract owner from withdrawing vault tokens.
-    uint256 public owner_withdrawal_locked_until = 0;
-    
-    // The thresholds at which the ability to prematurely withdraw a deposit
-    // defaults to disabled.
-    uint256 public threshold_principal;
-    uint256 public threshold_duration;
-    
-    // Events that the contract can emit.
-    event OwnerBNBRecovery(uint256 amount);
-    event OwnerTokenRecovery(address token_recovered, uint256 amount);
-    event OwnerWithdrawal(uint256 amount);
-    event Withdrawal(uint256 term_id, address indexed user, uint256 amount);
-    event PrematureWithdrawal(uint256 term_id, address indexed user, uint256 amount);
-    event Deposit(uint256 term_id, address indexed user, uint256 amount);
-    event CreateTerm(
-        uint256 duration,
-        uint256 minimum_deposit,
-        uint256 yield_numerator,
-        uint256 yield_denominator
-    );
-    
-    // Instantiates the Vault contract.
-    //
-    // @param _original_owner:
-    //  - An address to specify the contract owner on contract creation.
-    //
-    // @param _vault_token_address:
-    //  - The address of the token that will be held and issued by this vault.
-    //
-    // @param _threshold_principal
-    //  - Deposit sizes above which premature withdrawal is disabled.
-    //
-    // @param _threshold_duration
-    //  - Term durations above which premature withdrawal is disabled.
-    constructor(
-        address _original_owner,
-        address _vault_token_address,
-        uint256 _threshold_principal,
-        uint256 _threshold_duration
-    ) Ownable(_original_owner)
-    {
-        // Configures the token that the vault will handle.
-        vault_token              = IBEP20(_vault_token_address);
-        vault_token_address      = _vault_token_address;
-        vault_token_decimals     = IBEP20(vault_token_address).decimals();
-        vault_token_scale_factor = 10 ** vault_token_decimals;
-        
-        // Sets the premature withdrawal thresholds.
-        threshold_principal = _threshold_principal;
-        threshold_duration  = _threshold_duration;
-        
-        // Defines a deposit of at least 10 million tokens with a term of
-        // 7 days which returns a 0.5% yield upon maturity.
-        createTerm(7 days, toEther(10 ** 7), 5, 1000);
-        
-        // Defines a deposit of at least 100 million tokens with a term of
-        // 30 days which returns a 3.0% yield upon maturity.
-        createTerm(30 days, toEther(10 ** 8), 30, 1000);
-        
-        // Defines a deposit of at least 1 billion tokens with a term of
-        // 90 days which returns a 10.0% yield upon maturity.
-        createTerm(90 days, toEther(10 ** 9), 100, 1000);
-        
-        // Defines a deposit of at least 10 billion tokens with a term of
-        // 180 days which returns a 22.0% yield upon maturity.
-        createTerm(180 days, toEther(10 ** 10), 220, 1000);
+
+    struct StakeTracker {
+        uint256[] stakes;
+        uint256[] rewards;
+        uint256[] claimedAt;
+        uint256[] stakedAt;
+        uint256[] lockId;
+        bool withdraw;
     }
-    
-    // A modifier to validate a term ID parameter of a function.
-    modifier validTermID(uint256 _term_id)
+    // Whether it is initialized
+    bool public isInitialized;
+
+    // The reward token
+    IBEP20 public rewardToken;
+
+    // The staked token
+    IBEP20 public stakedToken;
+
+    //total staking tokens
+    uint256 public totalStakingTokens;
+
+    //total reward tokens
+    uint256 public totalRewardTokens;
+
+    uint256 public maxVault = 3;
+
+    uint256 public lockId;
+    mapping(uint256 => LockInfo) public lockInfo;
+    mapping(address => mapping(uint256 => StakeTracker)) private accounts;
+
+    mapping(address => bool) compound;
+    mapping(address => uint256) ueerVaultCount;
+
+    event AdminTokenRecovery(address tokenRecovered, uint256 amount);
+    event Deposit(address indexed user, uint256 amount);
+    event Withdraw(address indexed user, uint256 amount);
+    event AddRewardTokens(address indexed user, uint256 amount);
+    event Harvest(address indexed user, uint256 reward);
+
+    /**
+     * @notice Initialize the contract
+     * @param _stakedToken: staked token address
+     * @param _rewardToken: reward token address
+     */
+    function initialize(IBEP20 _stakedToken, IBEP20 _rewardToken)
+        external
+        onlyOwner
     {
-        // Requires that a term matching the chosen ID exists.
-        require(_term_id <= (number_of_terms - 1), "Invalid term ID");
-        
-        // Executes the modified function.
-        _;
+        require(!isInitialized, "Already initialized");
+
+        // Make this contract initialized
+        isInitialized = true;
+        stakedToken = _stakedToken;
+        rewardToken = _rewardToken;
     }
-    
-    // Allows this contract to receive and handle BNB.
-    receive() external payable
-    {}
-    
-    // Allows the contract owner to recover BNB sent to the contract.
-    function recoverBNB() public onlyOwner
-    {
-        // Identifies how much BNB is held by the contract.
-        uint256 contract_balance = address(this).balance;
-        
-        // Requires that the amount of BNB being recovered is greater than
-        // zero.
-        require(contract_balance > 0, "Contract BNB balance is zero");
-        
-        // Transfers all BNB in the contract to the contract owner.
-        payable(owner()).transfer(contract_balance);
-        
-        // Emits a BNB recovery event.
-        emit OwnerBNBRecovery(contract_balance);
+
+    /**
+     * @dev get compound value against a user
+     * @param _user address of user
+     */
+    function getUserCompund(address _user) external view returns (bool) {
+        return compound[_user];
     }
-    
-    // Releases a random token sent to this contract to the contract owner.
-    //
-    // Blocks attempts to release the token stored in and rewarded by the vault
-    // to protect the holdings of its users.
-    //
-    // @param token_address:
-    //  - The address of the token being recovered.
-    function recoverTokens(address token_address) public onlyOwner
+
+    /**
+     * @dev get user vaults
+     * @param _userAddress address of user
+     * @param _upto upto lock id, for example if user fill two vaults, you need to pass 2
+     * @param _index investment index
+     */
+    function getUserVaults(
+        address _userAddress,
+        uint256 _upto,
+        uint256 _index
+    ) external view returns (uint256[] memory, uint256[] memory) {
+        uint256[] memory stakes = new uint256[](_upto);
+        uint256[] memory rewards = new uint256[](_upto);
+        for (uint256 j = 0; j < _upto; j++) {
+            StakeTracker memory account = accounts[_userAddress][j + 1];
+            stakes[j] = account.stakes[_index];
+            rewards[j] = account.rewards[_index];
+        }
+
+        return (stakes, rewards);
+    }
+
+    /**
+     * @dev get user info
+     * @param _userAddress address of user
+     * @param _index investment index
+     * @param _lockId lock id
+     */
+    function getUserInfo(
+        address _userAddress,
+        uint256 _index,
+        uint256 _lockId
+    )
+        external
+        view
+        returns (
+            uint256 stake,
+            uint256 reward,
+            uint256 claimedAt,
+            uint256 stakedAt,
+            uint256 duration,
+            bool canWithdraw,
+            uint256 blockNumber
+        )
     {
-        // Requires that the token being recoverd is not the same token that
-        // protected by the vault.
-        require(
-            token_address != vault_token_address,
-            "Cannot recover the vault protected token with this function"
+        StakeTracker storage account = accounts[_userAddress][_lockId];
+        stake = account.stakes[_index];
+        reward = account.rewards[_index];
+        stakedAt = account.stakedAt[_index];
+        claimedAt = account.claimedAt[_index];
+        duration = lockInfo[_lockId].duration;
+        canWithdraw = account.stakedAt[_index].add(duration) < block.number;
+        blockNumber = block.number;
+    }
+
+    /**
+     * @dev get all investments along with lock id
+     * @param _userAddress address of user
+     */
+    function getUserAllInvestments(address _userAddress)
+        external
+        view
+        returns (
+            uint256[] memory,
+            uint256[] memory,
+            bool[] memory,
+            uint256
+        )
+    {
+        uint256 totalInvesment;
+        for (uint256 i; i < lockId; i++) {
+            StakeTracker memory account = accounts[_userAddress][i + 1];
+            totalInvesment = totalInvesment + account.stakes.length;
+        }
+
+        uint256[] memory indexes = new uint256[](totalInvesment);
+        uint256[] memory locks = new uint256[](totalInvesment);
+        bool[] memory withdraws = new bool[](totalInvesment);
+
+        uint256 k;
+        for (uint256 i; i < lockId; i++) {
+            StakeTracker memory account = accounts[_userAddress][i + 1];
+            for (uint256 j = 0; j < account.stakes.length; j++) {
+                indexes[k] = j;
+                locks[k] = i + 1;
+                withdraws[k] = account.withdraw;
+                k++;
+            }
+        }
+
+        return (indexes, locks, withdraws, totalInvesment);
+    }
+
+    /**
+     * @dev get lock against id
+     * @param _lockId lock id
+     */
+    function getLock(uint256 _lockId)
+        external
+        view
+        returns (
+            uint256,
+            uint256,
+            uint256,
+            uint256,
+            bool
+        )
+    {
+        LockInfo memory lock = lockInfo[_lockId];
+        return (
+            lock.lockId,
+            lock.minimumDeposit,
+            lock.percentage,
+            lock.duration,
+            lock.isEnabled
         );
-        
-        // Interfaces with the token being recovered.
-        IBEP20 token = IBEP20(token_address);
-        
-        // Identifies how much of the token is held by the contract.
-        uint256 contract_balance = token.balanceOf(address(this));
-        
-        // Requires that the amount of the token being recovered is greater
-        // than zero.
-        require(contract_balance > 0, "Contract token balance is zero");
-        
-        // Transfers the full balance of the token held by the contract to the
-        // contract owner.
-        token.safeTransfer(owner(), contract_balance);
-        
-        // Emits a token recovery event.
-        emit OwnerTokenRecovery(token_address, contract_balance);
     }
-    
-    // Releases vault tokens to the contract owner.
-    //
-    // This function can be time-locked for the security of the vault users.
-    //
-    // @param _amount:
-    //  - The number of tokens to recover in fixed point format.
-    function recoverVaultTokens(uint256 _amount) public onlyOwner
-    {
-        // Requires that owner recovery of vault tokens not be protected under
-        // a current time-lock.
-        require(
-            owner_withdrawal_locked_until <= block.timestamp,
-            "The vault protected token is currently locked"
-        );
-        
-        // Identifies how much of the vault token is held by the contract.
-        uint256 contract_balance = vault_token.balanceOf(address(this));
-        
-        // Requires that the amount of tokens held by the contract matches or
-        // exceeds the amount being recovered.
-        require(
-            contract_balance >= _amount,
-            "Cannot withdraw more tokens than are held by the contract"
-        );
-        
-        // Transfers the full balance of the token held by the contract to the
-        // contract owner.
-        vault_token.safeTransfer(owner(), _amount);
-        
-        // Emits a token recovery event.
-        emit OwnerWithdrawal(_amount);
+
+    /**
+     * @dev user can set compound value to true and false, on havest value will be automatically send to investment
+     * @param _compound compound value
+     */
+    function setCompound(bool _compound) external {
+        compound[msg.sender] = _compound;
     }
-    
-    // Sets or extends a time-lock on the recovery of vault protected tokens by
-    // the contract owner.
-    //
-    // @param _release_time;
-    //  - The Unix timestamp that owner vault token recovery is locked until.
-    function lockOwnerWithdrawal(uint256 _release_time) public onlyOwner
-    {
-        // Requires that the release time be a future time.
-        require(
-            _release_time > block.timestamp,
-            "The lock release timestamp must be greater than the current timestamp"
-        );
-        
-        // Requires the new release time to exceed any existing release time.
-        require(
-            _release_time > owner_withdrawal_locked_until,
-            "The new lock release time must be greater than the current one"
-        );
-        
-        // Sets a new time-lock release time.
-        owner_withdrawal_locked_until = _release_time;
+
+    /**
+     * @dev set maximum vault par user at a time
+     * @param _maxVault value of max Vault
+     */
+    function setMaxVault(uint256 _maxVault) external onlyOwner {
+        maxVault = _maxVault;
     }
-    
-    // Converts the token amount from fixed point representation to the
-    // floating point representation that most users are accustomed to.
-    //
-    // @param _amount:
-    //  - The number of tokens to deposit in fixed point representation.
-    function toEther(uint256 _amount) public view returns(uint256)
-    {
-        // Returns the amount scaled to the floating point representation
-        // according to the number of decimals utilized by the token.
-        return _amount.mul(vault_token_scale_factor);
-    }
-    
-    // Returns the current block timestamp for at-a-glance comparison with lock
-    // release times or term end times.
-    function currentTimestamp() public view returns(uint256)
-    {
-        // Returns the current block timestamp.
-        return block.timestamp;
-    }
-    
-    // Creates a possible term option for a vault deposit.
-    //
-    // The ID number associated with a given term is determined by the order
-    // in which it was created. IDs start at zero and increment from there.
-    //
-    // @param _duration:
-    //  - The duration of the term in seconds.
-    //
-    // @param _minimum_deposit:
-    //  - The minimum allowed deposit for this term given in expanded integer
-    //    form.
-    //
-    // @param _yield_numerator:
-    //  - The numerator used to calculate the yield percentage.
-    //
-    // @param _yield_denominator:
-    //  - The denominator used to calculate the yield percentage.
-    function createTerm(
+
+    /**
+     * @dev add or update locks
+     * @param _lockId add new lock id, send 0 for for new lock and lockId to update
+     * @param _minimumDeposit add minimum Deposit
+     * @param _percentage add percentage
+     * @param _duration duration of locks in blocks
+     * @param _isEnabled enable or disable lock
+     */
+    function addOrUpdateLock(
+        uint256 _lockId,
+        uint256 _minimumDeposit,
+        uint256 _percentage,
         uint256 _duration,
-        uint256 _minimum_deposit,
-        uint256 _yield_numerator,
-        uint256 _yield_denominator
-    ) public onlyOwner
-    {
-        // Requires that the duration of the deposit term be longer than zero.
-        require(_duration > 0, "The duration of the term cannot be zero");
-        
-        // Creates a new term deposit and increments the tracker of the number
-        // of term deposits that have been created.
-        TermDeposit storage _term = deposit_terms[number_of_terms++];
-        
-        // Sets the attributes of the newly created term.
-        _term.duration           = _duration;
-        _term.minimum_deposit    = _minimum_deposit;
-        _term.yield_numerator    = _yield_numerator;
-        _term.yield_denominator  = _yield_denominator;
-        _term.number_of_accounts = 0;
-        
-        // Emits a term creation event.
-        emit CreateTerm(
-            _duration,
-            _minimum_deposit,
-            _yield_numerator,
-            _yield_denominator
-        );
+        bool _isEnabled
+    ) external onlyOwner {
+        //insert
+        if (_lockId == 0) {
+            lockId = lockId + 1;
+            lockInfo[lockId] = LockInfo(
+                lockId,
+                _minimumDeposit,
+                _percentage,
+                _duration,
+                _isEnabled
+            );
+        } else {
+            LockInfo storage info = lockInfo[_lockId];
+            info.minimumDeposit = _minimumDeposit;
+            info.percentage = _percentage;
+            info.duration = _duration;
+            info.isEnabled = _isEnabled;
+        }
     }
-    
-    // Allows the owner to toggle whether an arbitrary deposit in a given term
-    // can be withdrawn prematurely. Newly created deposits have this value
-    // set to false by default. This function can be used to set it to true or
-    // restore it to false.
-    //
-    // @param _term_id:
-    //  - An integer identifier associated with one of the existing terms.
-    //
-    // @param _account:
-    //  - The address of the account that made the deposit.
-    //
-    // @param _enabled:
-    //  - A boolean value representing whether or not premature withdrawal of
-    //    the deposit is allowed. "true" allows premature withdrawal. "false"
-    //    prohibits it.
-    function setPrematureWithdrawalEnabled(
-        uint256 _term_id,
-        address _account,
-        bool    _enabled
-    ) public onlyOwner validTermID(_term_id)
-    {
-        // Loads the deposit term associated with the given term ID.
-        TermDeposit storage _term = deposit_terms[_term_id];
-        
-        // Requires that an account has made a deposit for this term.
+
+    /**
+     * @dev Deposit staked tokens and collect reward tokens (if any)
+     * @param _amount: amount to withdraw (in rewardToken)
+     * @param _lockId lockId where user needs to deposit
+     */
+    function deposit(uint256 _amount, uint256 _lockId) external nonReentrant {
+        LockInfo memory lock = lockInfo[_lockId];
         require(
-            _term.accounts.contains(_account),
-            "No deposit exists for this account and term"
+            _amount >= lock.minimumDeposit,
+            "amount should be greater than minimum Deposit"
         );
-        
-        // Accesses the safe deposit box in the vault for this user.
-        SafeDepositBox storage _deposit = _term.deposits[_account];
-        
-        // Enables or disables premature withdrawal of the account's deposit
-        // for the indicated term.
-        _deposit.premature_withdrawal_enabled = _enabled;
-    }
-    
-    // Calculates the reward owed upon term deposit maturity.
-    //
-    // @param _principal:
-    //  - The amount of principal deposited.
-    //
-    // @param _yield_numerator:
-    //  - The numerator used to calculate the yield percentage.
-    //
-    // @param _yield_denominator:
-    //  - The denominator used to calculate the yield percentage.
-    function calculateReward(
-        uint256 _principal,
-        uint256 _yield_numerator,
-        uint256 _yield_denominator
-    ) public pure returns(uint256)
-    {
-        return _principal.mul(_yield_numerator).div(_yield_denominator);
-    }
-    
-    // Allows an account to make a deposit to a specific term.
-    //
-    // @param _term_id:
-    //  - An integer identifier associated with one of the existing terms.
-    //
-    // @param _amount:
-    //  - The number of tokens to recover in fixed point format.
-    function deposit(
-        uint256 _term_id,
-        uint256 _amount
-    ) public nonReentrant validTermID(_term_id)
-    {
-        // Requires that the amount deposited is greater than zero.
-        require(_amount > 0, "The amount to deposit cannot be zero");
-        
-        // Loads the deposit term associated with the given term ID.
-        TermDeposit storage _term = deposit_terms[_term_id];
-        
-        // Requires one deposit per account per term.
         require(
-            !_term.accounts.contains(_msgSender()),
-            "A deposit already exists for this account and term"
+            ueerVaultCount[msg.sender] < maxVault,
+            "only max vault are allowed"
         );
-        
-        // Requires that the deposited amount match or exceed the minimum
-        // requirement.
-        require(
-            _amount >= _term.minimum_deposit,
-            "Deposit is below the minimum principal required for this term"
-        );
-        
-        // Transfers the amount deposited to the contract.
-        //
-        // NOTE: The contract instance must be approved by the user first so
-        //       that the allowance is high enough to allow the transfer.
-        //       This process can be automated by integrating this contract,
-        //       the token contract, and the user-signed call with a web3
-        //       service.
-        vault_token.safeTransferFrom(
-            address(_msgSender()),
+
+        StakeTracker storage account = accounts[msg.sender][_lockId];
+        require(account.withdraw == false, "only 1 investment per lock");
+
+        account.stakes.push(_amount);
+        account.stakedAt.push(block.number);
+        account.claimedAt.push(block.number);
+        account.rewards.push(0);
+        account.lockId.push(_lockId);
+        account.withdraw = true;
+
+        stakedToken.safeTransferFrom(
+            address(msg.sender),
             address(this),
             _amount
         );
-        
-        // Adds the user to the list of accounts for this term.
-        _term.accounts.add(_msgSender());
-        _term.number_of_accounts++;
-        
-        // Creates a safe deposit box in the vault for this user.
-        SafeDepositBox storage _deposit = _term.deposits[_msgSender()];
-        
-        // Sets the attributes of the box.
-        _deposit.end_time  = block.timestamp + _term.duration;
-        _deposit.principal = _amount;
-        _deposit.reward    = calculateReward(
-            _amount,
-            _term.yield_numerator,
-            _term.yield_denominator
+        totalStakingTokens = totalStakingTokens.add(_amount);
+        ueerVaultCount[msg.sender] = ueerVaultCount[msg.sender].add(1);
+        emit Deposit(msg.sender, _amount);
+    }
+
+    /**
+     * @notice Withdraw staked tokens and collect reward tokens
+     * @param _lockId: lock id
+     * @param _index index of the investment
+     */
+    function withdraw(uint256 _lockId, uint256 _index) public nonReentrant {
+        StakeTracker storage account = accounts[msg.sender][_lockId];
+        LockInfo memory lock = lockInfo[_lockId];
+        require(_lockId == account.lockId[_index], "wrong lock id");
+
+        require(
+            account.stakedAt[_index].add(lock.duration) < block.number,
+            "unable to withdraw before the timelock"
         );
-        
-        // Defaults the ability to prematurely withdraw your deposit and forego
-        // any reward to enabled. This can be toggled by the contract owner.
-        _deposit.premature_withdrawal_enabled = true;
-        
-        // Deposits above the threshold principal automatically have their
-        // ability to be prematurely withdrawn disabled.
-        if (_deposit.principal > threshold_principal)
-        {
-            _deposit.premature_withdrawal_enabled = false;
+
+        uint256 reward = rewardOf(msg.sender, _lockId, _index);
+        uint256 amount = account.stakes[_index];
+        account.stakes[_index] = account.stakes[_index].sub(amount);
+        account.rewards[_index] = 0;
+        account.claimedAt[_index] = block.number;
+        account.withdraw = false;
+        //transfer stake tokens
+        stakedToken.safeTransfer(msg.sender, amount);
+        totalStakingTokens = totalStakingTokens.sub(amount);
+        //transfer pending reward
+        ueerVaultCount[msg.sender] = ueerVaultCount[msg.sender].sub(1);
+        _safeRewardTransfer(msg.sender, reward);
+        emit Withdraw(msg.sender, amount);
+    }
+
+    /**
+     * @dev withdraw all the rewards
+     * @param _lockId lock id
+     * @param _index investment id of the rewards
+     */
+    function withdrawAll(uint256 _lockId, uint256 _index) external {
+        withdraw(_lockId, _index);
+    }
+
+    /**
+     * @dev claim all funds
+     */
+    function harvestAll() external {
+        for (uint256 i; i < lockId; i++) {
+            uint256[] memory rewards = rewardsOfLockId(msg.sender, i + 1);
+            for (uint256 j; j < rewards.length; j++) {
+                harvest(i + 1, j);
+            }
         }
-        
-        // Deposits in terms longer than the threshold duration automatically
-        // have their ability to be prematurely withdrawn disabled.
-        if (_term.duration > threshold_duration)
-        {
-            _deposit.premature_withdrawal_enabled = false;
+    }
+
+    /**
+     * @dev harvest token against lock id
+     * @param _lockId lock id
+     * @param _index investment index
+     */
+    function harvest(uint256 _lockId, uint256 _index) public {
+        uint256 reward = rewardOf(msg.sender, _lockId, _index);
+        require(reward > 0, "insufficient rewards");
+
+        StakeTracker storage account = accounts[msg.sender][_lockId];
+        account.rewards[_index] = 0;
+        account.claimedAt[_index] = block.number;
+        if (compound[msg.sender] == true) {
+            account.stakes[_index] = account.stakes[_index] + reward;
+            totalStakingTokens = totalStakingTokens.add(reward);
+        } else {
+            _safeRewardTransfer(msg.sender, reward);
         }
-        
-        // Increments the current holdings and pending reward trackers.
-        current_vault_holdings = current_vault_holdings.add(_deposit.principal);
-        pending_vault_rewards  = pending_vault_rewards.add(_deposit.reward);
-        
-        // Emits a deposit event.
-        emit Deposit(_term_id, _msgSender(), _amount);
+        emit Harvest(msg.sender, reward);
     }
-    
-    // Allows an account to make a withdrawal from a specific term.
-    //
-    // @param _term_id:
-    //  - An integer identifier associated with one of the existing terms.
-    function withdraw(uint256 _term_id) public nonReentrant validTermID(_term_id)
-    {
-        // Loads the deposit term associated with the given term ID.
-        TermDeposit storage _term = deposit_terms[_term_id];
-        
-        // Requires that an account has made a deposit for this term.
-        require(
-            _term.accounts.contains(_msgSender()),
-            "No deposit exists for this account and term"
+
+    /**
+     * @dev calculate rewards
+     * @param _address user address
+     * @param _lockId lock id
+     * @param _index investment index
+     */
+    function rewardOf(
+        address _address,
+        uint256 _lockId,
+        uint256 _index
+    ) public view returns (uint256) {
+        StakeTracker memory account = accounts[_address][_lockId];
+        LockInfo memory lock = lockInfo[_lockId];
+
+        uint256 accumulator = block.number >
+            account.stakedAt[_index] + lock.duration
+            ? (account.stakedAt[_index] + lock.duration).sub(
+                account.claimedAt[_index]
+            )
+            : block.number.sub(account.claimedAt[_index]);
+
+        uint256 reward = account.stakes[_index].mul(lock.percentage).div(
+            RATE_NOMINATOR
         );
-        
-        // Accesses the safe deposit box in the vault for this user.
-        SafeDepositBox storage _deposit = _term.deposits[_msgSender()];
-        
-        // Requires that the deposit for this term be mature to withdraw.
-        require(
-            _deposit.end_time <= block.timestamp,
-            "Cannot withdraw deposit before it reaches maturity"
-        );
-        
-        // The amount to be withdrawn, calculated as the original deposit plus
-        // the earned reward.
-        uint256 _amount = _deposit.principal + _deposit.reward;
-        
-        // Checks how many tokens are currently held by the contract.
-        uint256 contract_balance = vault_token.balanceOf(address(this));
-        
-        // Requires that the contract contain enough tokens to withdraw.
-        require(
-            contract_balance >= _amount,
-            "Contract contains insufficient tokens to match this withdrawal attempt"
-        );
-        
-        // Withdraws the tokens.
-        vault_token.safeTransfer(_msgSender(), _amount);
-        
-        // Decrements the current holdings and pending reward trackers.
-        current_vault_holdings = current_vault_holdings.sub(_deposit.principal);
-        pending_vault_rewards  = pending_vault_rewards.sub(_deposit.reward);
-        
-        // Closes the account's safe deposit box for this term.
-        _term.accounts.remove(_msgSender());
-        delete _term.deposits[_msgSender()];
-        _term.number_of_accounts--;
-        
-        // Emits a withdrawal event.
-        emit Withdrawal(_term_id, _msgSender(), _amount);
+
+        reward = accumulator == 0
+            ? 0
+            : reward.mul(accumulator).div(lock.duration);
+
+        return account.rewards[_index].add(reward);
     }
-    
-    // Allows an account to make a premature withdrawal.
-    //
-    // @param _term_id:
-    //  - An integer identifier associated with one of the existing terms.
-    function withdrawPrematurely(uint256 _term_id) public nonReentrant validTermID(_term_id)
+
+    function rewardsOfLockId(address _address, uint256 _lockId)
+        public
+        view
+        returns (uint256[] memory)
     {
-        // Loads the deposit term associated with the given term ID.
-        TermDeposit storage _term = deposit_terms[_term_id];
-        
-        // Requires that an account has made a deposit for this term.
-        require(
-            _term.accounts.contains(_msgSender()),
-            "No deposit exists for this account and term"
-        );
-        
-        // Accesses the safe deposit box in the vault for this user.
-        SafeDepositBox storage _deposit = _term.deposits[_msgSender()];
-        
-        // Requires that premature withdrawal be enabled in order to
-        // withdraw prematurely.
-        require(
-            _deposit.premature_withdrawal_enabled,
-            "Premature withdrawal requests must be approved by the contract owner"
-        );
-        
-        // The amount of principal being prematurely withdrawn.
-        uint256 _amount = _deposit.principal;
-        
-        // Checks how many tokens are currently held by the contract.
-        uint256 contract_balance = vault_token.balanceOf(address(this));
-        
-        // Requires that the contract contain enough tokens to withdraw.
-        require(
-            contract_balance >= _amount,
-            "Contract contains insufficient tokens to match this withdrawal attempt"
-        );
-        
-        // Withdraws the tokens.
-        vault_token.safeTransfer(_msgSender(), _amount);
-        
-        // Decrements the current holdings and pending reward trackers.
-        current_vault_holdings = current_vault_holdings.sub(_deposit.principal);
-        pending_vault_rewards  = pending_vault_rewards.sub(_deposit.reward);
-        
-        // Closes the account's safe deposit box for this term.
-        _term.accounts.remove(_msgSender());
-        delete _term.deposits[_msgSender()];
-        _term.number_of_accounts--;
-        
-        // Emits a premature withdrawal event.
-        emit PrematureWithdrawal(_term_id, _msgSender(), _amount);
+        uint256 length = accounts[_address][_lockId].rewards.length;
+        uint256[] memory rewards = new uint256[](length);
+
+        for (uint256 i = 0; i < length; i++) {
+            rewards[i] = rewardOf(_address, _lockId, i);
+        }
+        return rewards;
     }
-    
-    // Determines the number of tokens available to pay out from the vault.
-    function vaultBalance() public view returns(uint256)
-    {
-        // Returns the current token balance in the contract.
-        return vault_token.balanceOf(address(this));
+
+    /**
+     * @notice View function to see pending reward on frontend.
+     * @param _user: user address
+     * @return Pending reward for a given user
+     */
+    function pendingReward(address _user) external view returns (uint256) {
+        uint256 reward;
+        for (uint256 i = 0; i < lockId; i++) {
+            uint256[] memory rewards = rewardsOfLockId(_user, i + 1);
+            for (uint256 j; j < rewards.length; j++) {
+                reward = reward.add(rewards[j]);
+            }
+        }
+        return reward;
     }
-    
-    // Determines how many tokens would be owed by the vault to holders if all
-    // of them were eligible to withdraw their principal and interest
-    // immediately.
-    function vaultDebt() public view returns(uint256)
-    {
-        return current_vault_holdings + pending_vault_rewards;
+
+    /**
+     * @notice emergency withdraw all tokens
+     * @dev Only callable by owner. Needs to be for emergency.
+     */
+    function emergencyRewardWithdraw(uint256 _amount) external onlyOwner {
+        totalRewardTokens = totalRewardTokens.sub(_amount);
+        rewardToken.safeTransfer(address(msg.sender), _amount);
     }
-    
-    // Retrieves information about a term.
-    //
-    // @param _term_id:
-    //  - An integer identifier associated with one of the existing terms.
-    function getTermInfo(
-        uint256 _term_id
-    ) public view validTermID(_term_id) returns(
-        uint256 duration,
-        uint256 minimum_deposit,
-        uint256 yield_numerator,
-        uint256 yield_denominator,
-        uint256 number_of_accounts
-    )
-    {
-        // Loads the deposit term associated with the given term ID.
-        TermDeposit storage _term = deposit_terms[_term_id];
-        
-        // Populates the return values with information about the loaded term.
-        duration           = _term.duration;
-        minimum_deposit    = _term.minimum_deposit;
-        yield_numerator    = _term.yield_numerator;
-        yield_denominator  = _term.yield_denominator;
-        number_of_accounts = _term.number_of_accounts;
-    }
-    
-    // Retrieves information about a safe deposit box.
-    //
-    // @param _term_id:
-    //  - An integer identifier associated with one of the existing terms.
-    //
-    // @param _account:
-    //  - The address of the account that made the deposit.
-    function getDepositInfo(
-        uint256 _term_id,
-        address _account
-    ) public view validTermID(_term_id) returns(
-        uint256 end_time,
-        uint256 principal,
-        uint256 reward,
-        bool    premature_withdrawal_enabled
-    )
-    {
-        // Loads the deposit term associated with the given term ID.
-        TermDeposit storage _term = deposit_terms[_term_id];
-        
-        // Requires that an account has made a deposit for this term.
-        require(
-            _term.accounts.contains(_account),
-            "No deposit exists for this account and term"
+
+    /**
+     * @notice It allows the admin to reward tokens
+     * @param _amount: amount of tokens
+     * @dev This function is only callable by admin.
+     */
+    function addRewardTokens(uint256 _amount) external onlyOwner {
+        totalRewardTokens = totalRewardTokens.add(_amount);
+        rewardToken.safeTransferFrom(
+            address(msg.sender),
+            address(this),
+            _amount
         );
-        
-        // Accesses the safe deposit box in the vault for this user.
-        SafeDepositBox storage _deposit = _term.deposits[_account];
-        
-        // Populates the return values with information about the loaded
-        // safe deposit box.
-        end_time  = _deposit.end_time;
-        principal = _deposit.principal;
-        reward    = _deposit.reward;
-        
-        premature_withdrawal_enabled = _deposit.premature_withdrawal_enabled;
+        emit AddRewardTokens(msg.sender, _amount);
+    }
+
+    /**
+     * @notice It allows the admin to recover wrong tokens sent to the contract
+     * @param _tokenAddress: the address of the token to withdraw
+     * @param _tokenAmount: the number of tokens to withdraw
+     * @dev This function is only callable by admin.
+     */
+    function recoverWrongTokens(address _tokenAddress, uint256 _tokenAmount)
+        external
+        onlyOwner
+    {
+        require(
+            _tokenAddress != address(stakedToken),
+            "Cannot be staked token"
+        );
+        require(
+            _tokenAddress != address(rewardToken),
+            "Cannot be reward token"
+        );
+
+        IBEP20(_tokenAddress).safeTransfer(address(msg.sender), _tokenAmount);
+
+        emit AdminTokenRecovery(_tokenAddress, _tokenAmount);
+    }
+
+    function getStakingAmount(
+        address _user,
+        uint256 _lockId,
+        uint256 _index
+    ) external view returns (uint256) {
+        StakeTracker memory account = accounts[_user][_lockId];
+        return account.stakes[_index];
+    }
+
+    /**
+     * @notice transfer reward tokens.
+     * @param _to: address where tokens will transfer
+     * @param _amount: amount of tokens
+     */
+    function _safeRewardTransfer(address _to, uint256 _amount) internal {
+        uint256 rewardTokenBal = totalRewardTokens;
+        if (_amount > rewardTokenBal) {
+            totalRewardTokens = totalRewardTokens.sub(rewardTokenBal);
+            rewardToken.safeTransfer(_to, rewardTokenBal);
+        } else {
+            totalRewardTokens = totalRewardTokens.sub(_amount);
+            rewardToken.safeTransfer(_to, _amount);
+        }
     }
 }

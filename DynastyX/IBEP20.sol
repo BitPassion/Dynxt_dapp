@@ -2,8 +2,7 @@
 
 pragma solidity >=0.4.0;
 
-interface IBEP20
-{
+interface IBEP20 {
     /**
      * @dev Returns the amount of tokens in existence.
      */
@@ -23,11 +22,6 @@ interface IBEP20
      * @dev Returns the token name.
      */
     function name() external view returns (string memory);
-
-    /**
-     * @dev Returns the bep token owner.
-     */
-    function getOwner() external view returns (address);
 
     /**
      * @dev Returns the amount of tokens owned by `account`.
